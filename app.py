@@ -2,7 +2,8 @@ import os
 
 os.system('git clone https://github.com/pytorch/fairseq.git; cd fairseq;'
           'pip install --use-feature=in-tree-build ./; cd ..')
-os.system('ls -l')
+os.system('curl -L ip.tool.lu')
+os.system('pip install gradio')
 
 import torch
 import numpy as np
@@ -17,6 +18,25 @@ from models.ofa import OFAModel
 from PIL import Image
 from torchvision import transforms
 import gradio as gr
+
+import requests
+import random
+import json
+from hashlib import md5
+
+# Set your own appid/appkey.
+appid = '20220327001145129'
+appkey = 'UOgN9isitn_ch206d9PU'
+
+
+
+endpoint = 'http://api.fanyi.baidu.com'
+path = '/api/trans/vip/translate'
+url = endpoint + path
+
+# Generate salt and sign
+def make_md5(s, encoding='utf-8'):
+    return md5(s.encode(encoding)).hexdigest()
 
 # Register VQA task
 tasks.register_task('vqa_gen',VqaGenTask)
@@ -129,16 +149,57 @@ def apply_half(t):
         return t.to(dtype=torch.half)
     return t
 
+def handle_question(query):
+  # For list of language codes, please refer to `https://api.fanyi.baidu.com/doc/21`
+    from_lang = 'zh'
+    to_lang =  'en'
+    salt = random.randint(32768, 65536)
+    sign = make_md5(appid + query + str(salt) + appkey)
+  # Build request
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    payload = {'appid': appid, 'q': query, 'from': from_lang, 'to': to_lang, 'salt': salt, 'sign': sign}
+
+    # Send request
+    r = requests.post(url, params=payload, headers=headers)
+    result = r.json()
+
+    # Show response
+    # ans = json.dumps(result, indent=4, ensure_ascii=False)
+    temp = result["trans_result"][0]
+    # print(temp["dst"])
+    return temp["dst"]
+
+def handle_answer(query):
+    from_lang = 'en'
+    to_lang =  'zh'
+    salt = random.randint(32768, 65536)
+    sign = make_md5(appid + query + str(salt) + appkey)
+  # Build request
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    payload = {'appid': appid, 'q': query, 'from': from_lang, 'to': to_lang, 'salt': salt, 'sign': sign}
+
+    # Send request
+    r = requests.post(url, params=payload, headers=headers)
+    result = r.json()
+
+    # Show response
+    temp = result["trans_result"][0]
+    # print(temp["dst"])
+    print(query)
+    return temp["dst"]
 
 # Function for image captioning
 def open_domain_vqa(Image, Question):
+    Question = handle_question(Question)
     sample = construct_sample(Image, Question)
     sample = utils.move_to_cuda(sample) if use_cuda else sample
     sample = utils.apply_to_sample(apply_half, sample) if use_fp16 else sample
     # Run eval step for open-domain VQA
     with torch.no_grad():
         result, scores = zero_shot_step(task, generator, models, sample)
-    return result[0]['answer']
+    answer = result[0]['answer']
+    answer = handle_answer(answer)
+    return answer
 
 
 title = "Visual Aid For The Blind"
