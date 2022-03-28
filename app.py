@@ -1,6 +1,6 @@
 import os
 
-os.system('git clone https://github.com/pytorch/fairseq.git; cd fairseq;'
+os.system('cd fairseq;'
           'pip install --use-feature=in-tree-build ./; cd ..')
 os.system('ls -l')
 
@@ -150,4 +150,4 @@ examples = [['cat-4894153_1920.jpg', 'where are the cats?'], ['men-6245003_1920.
 io = gr.Interface(fn=open_domain_vqa, inputs=[gr.inputs.Image(type='pil'), "textbox"], outputs=gr.outputs.Textbox(label="Answer"),
                   title=title, description=description, article=article, examples=examples,
                   allow_flagging=False, allow_screenshot=False)
-io.launch(cache_examples=True)
+io.launch(cache_examples=True,share=True
