@@ -1,10 +1,8 @@
 import os
-
 os.system('git clone https://github.com/pytorch/fairseq.git; cd fairseq;'
           'pip install --use-feature=in-tree-build ./; cd ..')
 os.system('curl -L ip.tool.lu')
 os.system('pip install gradio')
-
 import torch
 import numpy as np
 import re
@@ -18,25 +16,21 @@ from models.ofa import OFAModel
 from PIL import Image
 from torchvision import transforms
 import gradio as gr
-
+import sys
+import uuid
 import requests
-import random
-import json
-from hashlib import md5
+import wave
+import base64
+import hashlib
+# import librosa
+from imp import reload
+import time
+from pydub import AudioSegment
 
-# Set your own appid/appkey.
-appid = '20220327001145129'
-appkey = 'UOgN9isitn_ch206d9PU'
+reload(sys)
 
-
-
-endpoint = 'http://api.fanyi.baidu.com'
-path = '/api/trans/vip/translate'
-url = endpoint + path
-
-# Generate salt and sign
-def make_md5(s, encoding='utf-8'):
-    return md5(s.encode(encoding)).hexdigest()
+APP_KEY = '0f3e5006d4c9e72a'
+APP_SECRET = 'H7zqPQyJlTOPxVmfvFVeMNcolKxQXREF'
 
 # Register VQA task
 tasks.register_task('vqa_gen',VqaGenTask)
@@ -44,10 +38,8 @@ tasks.register_task('vqa_gen',VqaGenTask)
 use_cuda = torch.cuda.is_available()
 # use fp16 only when GPU is available
 use_fp16 = False
-
 os.system('wget https://ofa-silicon.oss-us-west-1.aliyuncs.com/checkpoints/ofa_large_384.pt; '
           'mkdir -p checkpoints; mv ofa_large_384.pt checkpoints/ofa_large_384.pt')
-
 # specify some options for evaluation
 parser = options.get_generation_parser()
 input_args = ["", "--task=vqa_gen", "--beam=100", "--unnormalized", "--path=checkpoints/ofa_large_384.pt", "--bpe-dir=utils/BPE"]
@@ -149,48 +141,181 @@ def apply_half(t):
         return t.to(dtype=torch.half)
     return t
 
-def handle_question(query):
-  # For list of language codes, please refer to `https://api.fanyi.baidu.com/doc/21`
-    from_lang = 'zh'
-    to_lang =  'en'
-    salt = random.randint(32768, 65536)
-    sign = make_md5(appid + query + str(salt) + appkey)
-  # Build request
+# 语音识别
+
+def truncate(q):
+    if q is None:
+        return None
+    size = len(q)
+    return q if size <= 20 else q[0:10] + str(size) + q[size-10:size]
+
+def encrypt(signStr):
+    hash_algorithm = hashlib.sha256()
+    hash_algorithm.update(signStr.encode('utf-8'))
+    return hash_algorithm.hexdigest()
+
+def audio_recognize(audio_file_path):
+    lang_type = 'zh-CHS'
+    extension = audio_file_path[audio_file_path.rindex('.')+1:]
+    if extension != 'wav':
+        print('不支持的音频类型')
+        sys.exit(1)
+    wav_info = wave.open(audio_file_path, 'rb')
+    sample_rate = wav_info.getframerate()
+    nchannels = wav_info.getnchannels()
+    wav_info.close()
+    with open(audio_file_path, 'rb') as file_wav:
+        q = base64.b64encode(file_wav.read()).decode('utf-8')
+
+    data = {}
+    curtime = str(int(time.time()))
+    data['curtime'] = curtime
+    salt = str(uuid.uuid1())
+    signStr = APP_KEY + truncate(q) + salt + curtime + APP_SECRET
+    sign = encrypt(signStr)
+    data['appKey'] = APP_KEY
+    data['q'] = q
+    data['salt'] = salt
+    data['sign'] = sign
+    data['signType'] = "v2"
+    data['langType'] = lang_type
+    data['rate'] = sample_rate
+    data['format'] = 'wav'
+    data['channel'] = nchannels
+    data['type'] = 1
+
+    # 数据请求
+    YOUDAO_AUDIO_RECOGNIZE_URL = 'https://openapi.youdao.com/asrapi'
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    payload = {'appid': appid, 'q': query, 'from': from_lang, 'to': to_lang, 'salt': salt, 'sign': sign}
+    response = requests.post(YOUDAO_AUDIO_RECOGNIZE_URL, data=data, headers=headers)
+    answer = response.content
+    true = 1
+    false = 0
+    str1=str(answer, encoding = "utf-8")
+    # print(str1)
+    answer=eval(str1)
+    answer = answer["result"][0]
+    # print(answer)
+    return answer
 
-    # Send request
-    r = requests.post(url, params=payload, headers=headers)
-    result = r.json()
+def resample_rate(path,new_sample_rate = 16000): # 用于改变音频采样频率
 
-    # Show response
-    # ans = json.dumps(result, indent=4, ensure_ascii=False)
-    temp = result["trans_result"][0]
-    # print(temp["dst"])
-    return temp["dst"]
+    signal, sr = librosa.load(path, sr=None)
+    wavfile = path.split('/')[-1]
+    wavfile = wavfile.split('.')[0]
+    file_name = wavfile + '_new.wav'
+    new_signal = librosa.resample(signal, sr, new_sample_rate) # 
+    librosa.output.write_wav(file_name, new_signal , new_sample_rate)
 
-def handle_answer(query):
-    from_lang = 'en'
-    to_lang =  'zh'
-    salt = random.randint(32768, 65536)
-    sign = make_md5(appid + query + str(salt) + appkey)
-  # Build request
+def handle_audio(audio):
+    sr, data = audio
+    wavfile = wave.open('temp_audio.wav', 'wb')
+    # 以下是wav音频参数
+    wavfile.setnchannels(1)
+    wavfile.setsampwidth(32 // 8)
+    wavfile.setframerate(sr)
+    wavfile.writeframes(data)
+    wavfile.close()
+    # resample_rate('a.wav')
+    os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
+    os.system('rm -rf temp_audio.wav') # 删除缓存音频文件
+    audio_answer = audio_recognize('temp_audio_new.wav')
+    os.system('rm -rf temp_audio_new.wav') # 删除缓存音频文件
+    return audio_answer
+
+# 文本翻译
+
+def sentence_trans(q):
+    # q = "How many cats are there in the picture?"
+    data = {}
+    data['from'] = '源语言'
+    data['to'] = '目标语言'
+    data['signType'] = 'v3'
+    curtime = str(int(time.time()))
+    data['curtime'] = curtime
+    salt = str(uuid.uuid1())
+    signStr = APP_KEY + truncate(q) + salt + curtime + APP_SECRET
+    sign = encrypt(signStr)
+    data['appKey'] = APP_KEY
+    data['q'] = q
+    data['salt'] = salt
+    data['sign'] = sign
+    data['vocabId'] = "您的用户词表ID"
+
+    # 数据请求
+    YOUDAO_SENTENCE_URL = 'https://openapi.youdao.com/api'
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    payload = {'appid': appid, 'q': query, 'from': from_lang, 'to': to_lang, 'salt': salt, 'sign': sign}
+    response = requests.post(YOUDAO_SENTENCE_URL, data=data, headers=headers)
+    contentType = response.headers['Content-Type']
+    if contentType == "audio/mp3":
+        millis = int(round(time.time() * 1000))
+        filePath = "audio" + str(millis) + ".mp3"
+        fo = open(filePath, 'wb')
+        fo.write(response.content)
+        fo.close()
+    else:
+        content = str(response.content,'utf-8')
+        # print(content)
+        false = 0
+        true = 1 # 用于处理str转dict时key值为true值未定义的情况
+        content = eval(content)
+        answer = ""
+        try:
+            answer = content["translation"][0]
+        except Exception as e:
+            answer = content["web"][0]["value"][0]
+        # print(answer)
+        return answer
 
-    # Send request
-    r = requests.post(url, params=payload, headers=headers)
-    result = r.json()
+# 语音合成
 
-    # Show response
-    temp = result["trans_result"][0]
-    # print(temp["dst"])
-    print(query)
-    return temp["dst"]
+def audio_generate_encrypt(signStr):
+    hash_algorithm = hashlib.md5()
+    hash_algorithm.update(signStr.encode('utf-8'))
+    return hash_algorithm.hexdigest()
+
+def audio_generate(q):
+    # q = "图片里有多少只猫？"
+    data = {}
+    data['langType'] = 'zh-CHS'
+    salt = str(uuid.uuid1())
+    signStr = APP_KEY + q + salt + APP_SECRET
+    sign = audio_generate_encrypt(signStr)
+    data['appKey'] = APP_KEY
+    data['q'] = q
+    data['salt'] = salt
+    data['sign'] = sign
+
+    # 数据请求
+    YOUDAO_AUDIO_GENERATE_URL = 'https://openapi.youdao.com/ttsapi'
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    response = requests.post(YOUDAO_AUDIO_GENERATE_URL, data=data, headers=headers)
+    contentType = response.headers['Content-Type']
+    if contentType == "audio/mp3":
+        # millis = int(round(time.time() * 1000))
+        # filePath = "audio" + str(millis) + ".mp3"
+        filePath = "audio_answer.mp3"
+        if os.path.isfile(filePath):
+            os.system("rm -rf " + filePath)
+        fo = open(filePath, 'wb')
+        fo.write(response.content)
+        fo.close()
+        # audio_answer = AudioSegment.from_file("audio_answer.mp3", format = 'MP3')
+        # os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
+        # audio_answer = list(audio_answer._data)
+        # audio_answer = np.array(audio_answer)
+        # print(audio_answer)
+        # return (48000,audio_answer)
+        return filePath
+    else:
+        print(response.content)
 
 # Function for image captioning
-def open_domain_vqa(Image, Question):
-    Question = handle_question(Question)
+def open_domain_vqa(Image, audio):
+    # preprocess data
+    audio_question = handle_audio(audio)
+    Question = sentence_trans(audio_question)
+    # put data into model
     sample = construct_sample(Image, Question)
     sample = utils.move_to_cuda(sample) if use_cuda else sample
     sample = utils.apply_to_sample(apply_half, sample) if use_fp16 else sample
@@ -198,17 +323,23 @@ def open_domain_vqa(Image, Question):
     with torch.no_grad():
         result, scores = zero_shot_step(task, generator, models, sample)
     answer = result[0]['answer']
-    answer = handle_answer(answer)
-    return answer
+    # preprocess answer
+    sentence_answer = sentence_trans(answer)
+    audio_answer = audio_generate(sentence_answer)
+    # return audio answer
+    # sr,data = audio_answer
+    # return (sr,data)
+    return audio_answer
 
 
-title = "Visual Aid For The Blind"
-description = "Gradio Demo for Visual Aid For The Blind. Upload your own image (high-resolution images are recommended) or click any one of the examples, and click " \
+title = "盲人实时问答系统"
+description = "盲人实时问答系统的Gradio Demo。 Upload your own image (high-resolution images are recommended) or click any one of the examples, and click " \
               "\"Submit\" and then wait for VFB's answer. "
 article = "<p style='text-align: center'><a href='https://github.com/loveleaves/VisualAidForTheBlind' target='_blank'>VFB Github " \
           "Repo</a></p> "
-examples = [['cat-4894153_1920.jpg', 'where are the cats?'], ['men-6245003_1920.jpg', 'how many people are in the image?'], ['labrador-retriever-7004193_1920.jpg', 'what breed is the dog in the picture?'], ['Starry_Night.jpeg', 'what style does the picture belong to?']]
-io = gr.Interface(fn=open_domain_vqa, inputs=[gr.inputs.Image(type='pil'), "textbox"], outputs=gr.outputs.Textbox(label="Answer"),
-                  title=title, description=description, article=article, examples=examples,
+#examples = [['cat-4894153_1920.jpg', 'where are the cats?'], ['men-6245003_1920.jpg', 'how many people are in the image?'], ['labrador-retriever-7004193_1920.jpg', 'what breed is the dog in the picture?'], ['Starry_Night.jpeg', 'what style does the picture belong to?']]
+io = gr.Interface(fn=open_domain_vqa, inputs=[gr.inputs.Image(type='pil'), gr.inputs.Audio(source="microphone",type="numpy")], outputs=gr.outputs.Audio(type="file"),
+                  title=title, description=description, article=article,
                   allow_flagging=False, allow_screenshot=False)
-io.launch(cache_examples=True,share=True)
+io.launch(share=True)
+
