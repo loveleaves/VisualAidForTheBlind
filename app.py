@@ -1,8 +1,10 @@
-import os
+﻿import os
+
 os.system('git clone https://github.com/pytorch/fairseq.git; cd fairseq;'
           'pip install --use-feature=in-tree-build ./; cd ..')
-os.system('curl -L ip.tool.lu')
-os.system('pip install gradio')
+os.system('curl -L ip.tool.lu; pip install torchvision; pip install opencv-python-headless')
+os.system('bash vqa_large_best.sh; mkdir -p checkpoints; mv vqa_large_best.pt checkpoints/vqa.pt')
+
 import torch
 import numpy as np
 import re
@@ -22,10 +24,8 @@ import requests
 import wave
 import base64
 import hashlib
-# import librosa
 from imp import reload
 import time
-from pydub import AudioSegment
 
 reload(sys)
 
@@ -38,11 +38,10 @@ tasks.register_task('vqa_gen',VqaGenTask)
 use_cuda = torch.cuda.is_available()
 # use fp16 only when GPU is available
 use_fp16 = False
-os.system('wget https://ofa-silicon.oss-us-west-1.aliyuncs.com/checkpoints/ofa_large_384.pt; '
-          'mkdir -p checkpoints; mv ofa_large_384.pt checkpoints/ofa_large_384.pt')
+
 # specify some options for evaluation
 parser = options.get_generation_parser()
-input_args = ["", "--task=vqa_gen", "--beam=100", "--unnormalized", "--path=checkpoints/ofa_large_384.pt", "--bpe-dir=utils/BPE"]
+input_args = ["", "--task=vqa_gen", "--beam=100", "--unnormalized", "--path=checkpoints/vqa.pt", "--bpe-dir=utils/BPE"]
 args = options.parse_args_and_arch(parser, input_args)
 cfg = convert_namespace_to_omegaconf(args)
 
@@ -141,8 +140,7 @@ def apply_half(t):
         return t.to(dtype=torch.half)
     return t
 
-# 语音识别
-
+# Audio recognize
 def truncate(q):
     if q is None:
         return None
@@ -209,7 +207,11 @@ def resample_rate(path,new_sample_rate = 16000): # 用于改变音频采样频�
 
 def handle_audio(audio):
     sr, data = audio
-    wavfile = wave.open('temp_audio.wav', 'wb')
+    file_path = 'temp_audio.wav'
+    new_file_path = "temp_audio_new.wav"
+    if os.path.isfile(file_path):
+      os.system("rm -rf " + file_path)
+    wavfile = wave.open(file_path, 'wb')
     # 以下是wav音频参数
     wavfile.setnchannels(1)
     wavfile.setsampwidth(32 // 8)
@@ -217,19 +219,19 @@ def handle_audio(audio):
     wavfile.writeframes(data)
     wavfile.close()
     # resample_rate('a.wav')
-    os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
-    os.system('rm -rf temp_audio.wav') # 删除缓存音频文件
-    audio_answer = audio_recognize('temp_audio_new.wav')
+    # os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
+    song = AudioSegment.from_wav(file_path).set_frame_rate(16000)
+    song.export(new_file_path, format="wav")
+    # os.system('rm -rf temp_audio.wav') # 删除缓存音频文件
+    audio_answer = audio_recognize(new_file_path)
     os.system('rm -rf temp_audio_new.wav') # 删除缓存音频文件
     return audio_answer
 
-# 文本翻译
-
-def sentence_trans(q):
-    # q = "How many cats are there in the picture?"
+# sentence translation
+def sentence_trans(q,Trans_to = "auto"):
     data = {}
-    data['from'] = '源语言'
-    data['to'] = '目标语言'
+    data['from'] = 'auto'
+    data['to'] = Trans_to
     data['signType'] = 'v3'
     curtime = str(int(time.time()))
     data['curtime'] = curtime
@@ -240,42 +242,33 @@ def sentence_trans(q):
     data['q'] = q
     data['salt'] = salt
     data['sign'] = sign
-    data['vocabId'] = "您的用户词表ID"
+    data['vocabId'] = "2D4552567D81424D91FBF4805C70E05A"
 
     # 数据请求
     YOUDAO_SENTENCE_URL = 'https://openapi.youdao.com/api'
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     response = requests.post(YOUDAO_SENTENCE_URL, data=data, headers=headers)
     contentType = response.headers['Content-Type']
-    if contentType == "audio/mp3":
-        millis = int(round(time.time() * 1000))
-        filePath = "audio" + str(millis) + ".mp3"
-        fo = open(filePath, 'wb')
-        fo.write(response.content)
-        fo.close()
-    else:
-        content = str(response.content,'utf-8')
-        # print(content)
-        false = 0
-        true = 1 # 用于处理str转dict时key值为true值未定义的情况
-        content = eval(content)
-        answer = ""
-        try:
-            answer = content["translation"][0]
-        except Exception as e:
-            answer = content["web"][0]["value"][0]
-        # print(answer)
-        return answer
+    content = str(response.content,'utf-8')
+    # print(content)
+    false = 0
+    true = 1 # 用于处理str转dict时key值为true值未定义的情况
+    content = eval(content)
+    answer = ""
+    try:
+        answer = content["translation"][0]
+    except Exception as e:
+        answer = content["web"][0]["value"][0]
+    # print(answer)
+    return answer
 
-# 语音合成
-
+# audio generate
 def audio_generate_encrypt(signStr):
     hash_algorithm = hashlib.md5()
     hash_algorithm.update(signStr.encode('utf-8'))
     return hash_algorithm.hexdigest()
 
 def audio_generate(q):
-    # q = "图片里有多少只猫？"
     data = {}
     data['langType'] = 'zh-CHS'
     salt = str(uuid.uuid1())
@@ -291,32 +284,28 @@ def audio_generate(q):
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     response = requests.post(YOUDAO_AUDIO_GENERATE_URL, data=data, headers=headers)
     contentType = response.headers['Content-Type']
-    if contentType == "audio/mp3":
-        # millis = int(round(time.time() * 1000))
-        # filePath = "audio" + str(millis) + ".mp3"
-        filePath = "audio_answer.mp3"
-        if os.path.isfile(filePath):
-            os.system("rm -rf " + filePath)
-        fo = open(filePath, 'wb')
-        fo.write(response.content)
-        fo.close()
-        # audio_answer = AudioSegment.from_file("audio_answer.mp3", format = 'MP3')
-        # os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
-        # audio_answer = list(audio_answer._data)
-        # audio_answer = np.array(audio_answer)
-        # print(audio_answer)
-        # return (48000,audio_answer)
-        return filePath
-    else:
-        print(response.content)
+    # millis = int(round(time.time() * 1000))
+    # filePath = "audio" + str(millis) + ".mp3"
+    filePath = "audio_answer.mp3"
+    if os.path.isfile(filePath):
+        os.system("rm -rf " + filePath)
+    fo = open(filePath, 'wb')
+    fo.write(response.content)
+    fo.close()
+    # audio_answer = AudioSegment.from_file("audio_answer.mp3", format = 'MP3')
+    # os.system("ffmpeg -i 'temp_audio.wav' -ar 16000 'temp_audio_new.wav'")
+    # audio_answer = list(audio_answer._data)
+    # audio_answer = np.array(audio_answer)
+    # print(audio_answer)
+    # return (48000,audio_answer)
+    return filePath
 
 # Function for image captioning
-def open_domain_vqa(Image, audio):
+def open_domain_vqa(Image, Question):
     # preprocess data
-    audio_question = handle_audio(audio)
-    Question = sentence_trans(audio_question)
+    input_question = sentence_trans(Question,"en")
     # put data into model
-    sample = construct_sample(Image, Question)
+    sample = construct_sample(Image, input_question)
     sample = utils.move_to_cuda(sample) if use_cuda else sample
     sample = utils.apply_to_sample(apply_half, sample) if use_fp16 else sample
     # Run eval step for open-domain VQA
@@ -324,22 +313,21 @@ def open_domain_vqa(Image, audio):
         result, scores = zero_shot_step(task, generator, models, sample)
     answer = result[0]['answer']
     # preprocess answer
-    sentence_answer = sentence_trans(answer)
+    sentence_answer = sentence_trans(answer,"zh-CHS")
     audio_answer = audio_generate(sentence_answer)
     # return audio answer
     # sr,data = audio_answer
     # return (sr,data)
-    return audio_answer
+    return (sentence_answer, audio_answer)
 
 
-title = "盲人实时问答系统"
-description = "盲人实时问答系统的Gradio Demo。 Upload your own image (high-resolution images are recommended) or click any one of the examples, and click " \
-              "\"Submit\" and then wait for VFB's answer. "
+title = "盲人避障系统"
+description = "盲人避障系统的Demo。 食用指南：上传一张图片 (建议使用高分辨率图像) 和一句话的问题, 然后点击 " \
+              "\"Submit\" ，等待些许即可得到 VFB's 回答结果。"
 article = "<p style='text-align: center'><a href='https://github.com/loveleaves/VisualAidForTheBlind' target='_blank'>VFB Github " \
           "Repo</a></p> "
-#examples = [['cat-4894153_1920.jpg', 'where are the cats?'], ['men-6245003_1920.jpg', 'how many people are in the image?'], ['labrador-retriever-7004193_1920.jpg', 'what breed is the dog in the picture?'], ['Starry_Night.jpeg', 'what style does the picture belong to?']]
-io = gr.Interface(fn=open_domain_vqa, inputs=[gr.inputs.Image(type='pil'), gr.inputs.Audio(source="microphone",type="numpy")], outputs=gr.outputs.Audio(type="file"),
-                  title=title, description=description, article=article,
+examples = [['example-1.jpg', '图片里有多少只猫?'], ['example-2.jpg', '图片里有多少个人?'], ['example-3.jpg', '图片中的狗是什么品种?'], ['example-4.jpeg', '这张图片属于什么风格?']]
+io = gr.Interface(fn=open_domain_vqa, inputs=[gr.inputs.Image(type='pil'), "textbox"], outputs=[gr.outputs.Textbox(label="Caption"),gr.outputs.Audio(type="file")],
+                  title=title, description=description, article=article, examples=examples,
                   allow_flagging=False, allow_screenshot=False)
-io.launch(share=True)
-
+io.launch(cache_examples=True)
