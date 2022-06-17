@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 os.system('git clone https://github.com/pytorch/fairseq.git; cd fairseq;'
           'pip install --use-feature=in-tree-build ./; cd ..')
@@ -319,7 +319,6 @@ def open_domain_vqa(Image, Question):
     # sr,data = audio_answer
     # return (sr,data)
     return (sentence_answer, audio_answer)
-
 
 title = "盲人避障系统"
 description = "盲人避障系统的Demo。 食用指南：上传一张图片 (建议使用高分辨率图像) 和一句话的问题, 然后点击 " \
